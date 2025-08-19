@@ -1,0 +1,8 @@
+streamlit>=1.33
+plotly>=5.18
+pandas>=2.2
+numpy>=1.26
+yfinance>=0.2.50
+openpyxl>=3.1
+tabulate>=0.9
+kaleido>=0.2.1
