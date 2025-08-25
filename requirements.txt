@@ -3,3 +3,6 @@ yfinance>=0.2.36
 plotly>=5.22.0
 pandas>=2.2.0
 numpy>=1.26.0
+requests>=2.31.0
+openpyxl>=3.1.2
+xlrd>=2.0.1
