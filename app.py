@@ -1,131 +1,174 @@
-"""
-Minimal Stock Market Visualizer — Streamlit App
-
-Features:
-- Streamlit UI with sidebar controls
-- Fetches data via yfinance
-- Interactive Plotly candlestick charts with overlays (SMA/EMA, Bollinger Bands, RSI)
-- Customizable timeframe, intervals, thresholds, and colors
-- Save/load user configurations (JSON)
-- Helper instructions to push code to GitHub
-
-Run:
-  streamlit run app_minimal.py
-"""
-
-import json
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 import yfinance as yf
+import pandas as pd
+import numpy as np
+import plotly.graph_objs as go
+import plotly.express as px
+import json
+from datetime import datetime
 
-st.set_page_config(page_title="Stock Market Visualizer", page_icon="📈", layout="wide")
-
-# ------------------------------
-# Helpers
-# ------------------------------
-
-def sma(series: pd.Series, window: int):
-    return series.rolling(window).mean()
-
-def ema(series: pd.Series, window: int):
-    return series.ewm(span=window, adjust=False).mean()
-
-def bollinger_bands(series: pd.Series, window: int = 20, num_std: float = 2):
-    mid = sma(series, window)
-    sd = series.rolling(window).std()
-    return mid + num_std * sd, mid - num_std * sd
-
-def rsi(series: pd.Series, window: int = 14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1/window, min_periods=window).mean()
-    avg_loss = loss.ewm(alpha=1/window, min_periods=window).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
-
-@st.cache_data(ttl=60)
-def fetch_data(ticker, period, interval):
-    df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
+# --------------------------
+# Helper functions
+# --------------------------
+def download_data(ticker, start, end, interval="1d"):
+    df = yf.download(ticker, start=start, end=end, interval=interval)
     return df
 
-# ------------------------------
-# Sidebar controls
-# ------------------------------
+def add_moving_averages(df, windows=[20, 50]):
+    for w in windows:
+        df[f"SMA{w}"] = df["Close"].rolling(window=w).mean()
+        df[f"EMA{w}"] = df["Close"].ewm(span=w, adjust=False).mean()
+    return df
 
-st.sidebar.title("📊 Controls")
-ticker = st.sidebar.text_input("Ticker", "AAPL").upper()
-period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "5y", "max"], index=2)
+def add_bollinger_bands(df, window=20):
+    sma = df["Close"].rolling(window).mean()
+    std = df["Close"].rolling(window).std()
+    df["BB_upper"] = sma + 2*std
+    df["BB_lower"] = sma - 2*std
+    return df
+
+def add_rsi(df, window=14):
+    delta = df["Close"].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window).mean()
+    rs = gain / loss
+    df["RSI"] = 100 - (100 / (1 + rs))
+    return df
+
+# --------------------------
+# Streamlit App
+# --------------------------
+st.set_page_config(page_title="Stock Market Visualizer", layout="wide")
+st.title("📈 Stock Market Visualizer")
+
+# Sidebar config
+st.sidebar.header("Settings")
+ticker = st.sidebar.text_input("Enter stock ticker", "AAPL")
+start_date = st.sidebar.date_input("Start date", datetime(2022,1,1))
+end_date = st.sidebar.date_input("End date", datetime.today())
 interval = st.sidebar.selectbox("Interval", ["1d", "1wk", "1mo"], index=0)
 
-ma_windows = st.sidebar.multiselect("Moving Averages", [20, 50, 200], default=[20, 50])
-use_ema = st.sidebar.checkbox("Use EMA (off = SMA)", value=False)
-bb_window = st.sidebar.number_input("Bollinger Window", 5, 50, 20)
-rsi_window = st.sidebar.number_input("RSI Window", 5, 50, 14)
-rsi_overbought = st.sidebar.slider("RSI Overbought", 50, 90, 70)
-rsi_oversold = st.sidebar.slider("RSI Oversold", 10, 50, 30)
-
 # Save/load config
-with st.sidebar.expander("💾 Config"):
-    cfg = dict(ticker=ticker, period=period, interval=interval, ma_windows=ma_windows, use_ema=use_ema,
-               bb_window=bb_window, rsi_window=rsi_window, rsi_overbought=rsi_overbought, rsi_oversold=rsi_oversold)
-    st.download_button("Download Config", data=json.dumps(cfg).encode(), file_name="config.json")
-    upl = st.file_uploader("Upload Config", type="json")
-    if upl:
-        new_cfg = json.load(upl)
-        st.session_state.update(new_cfg)
-        st.experimental_rerun()
+if st.sidebar.button("💾 Save Config"):
+    config = {"ticker": ticker, "start_date": str(start_date), "end_date": str(end_date), "interval": interval}
+    with open("config.json", "w") as f:
+        json.dump(config, f)
+    st.sidebar.success("Config saved!")
 
-# ------------------------------
-# Main chart
-# ------------------------------
+if st.sidebar.button("📂 Load Config"):
+    try:
+        with open("config.json", "r") as f:
+            config = json.load(f)
+            ticker = config["ticker"]
+            start_date = pd.to_datetime(config["start_date"])
+            end_date = pd.to_datetime(config["end_date"])
+            interval = config["interval"]
+        st.sidebar.success("Config loaded!")
+    except FileNotFoundError:
+        st.sidebar.error("No saved config found.")
 
-df = fetch_data(ticker, period, interval)
+# Fetch data
+df = download_data(ticker, start_date, end_date, interval)
+
 if df.empty:
-    st.error("No data found.")
+    st.error("No data found. Try different dates or ticker.")
     st.stop()
 
-close = df["Close"]
+# Indicators
+df = add_moving_averages(df)
+df = add_bollinger_bands(df)
+df = add_rsi(df)
 
-fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.07,
-                    subplot_titles=(f"{ticker} Price", "RSI"))
+# --------------------------
+# Candlestick chart
+# --------------------------
+st.subheader(f"Candlestick chart for {ticker}")
 
-fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-                             increasing_line_color="#26a69a", decreasing_line_color="#ef5350"), row=1, col=1)
+fig = go.Figure()
+fig.add_trace(go.Candlestick(
+    x=df.index, open=df["Open"], high=df["High"],
+    low=df["Low"], close=df["Close"], name="Candlestick"
+))
 
-for w in ma_windows:
-    ma_series = ema(close, w) if use_ema else sma(close, w)
-    fig.add_trace(go.Scatter(x=df.index, y=ma_series, mode="lines", name=f"{'EMA' if use_ema else 'SMA'} {w}"), row=1, col=1)
+# Add SMA & EMA
+for col in [c for c in df.columns if "SMA" in c or "EMA" in c]:
+    fig.add_trace(go.Scatter(x=df.index, y=df[col], mode="lines", name=col))
 
-bb_up, bb_low = bollinger_bands(close, bb_window)
-fig.add_trace(go.Scatter(x=df.index, y=bb_up, line=dict(width=1), name="BB Upper"), row=1, col=1)
-fig.add_trace(go.Scatter(x=df.index, y=bb_low, line=dict(width=1), name="BB Lower"), row=1, col=1)
+# Bollinger Bands
+fig.add_trace(go.Scatter(x=df.index, y=df["BB_upper"], line=dict(color="gray", dash="dot"), name="BB Upper"))
+fig.add_trace(go.Scatter(x=df.index, y=df["BB_lower"], line=dict(color="gray", dash="dot"), name="BB Lower"))
 
-rsi_vals = rsi(close, rsi_window)
-fig.add_trace(go.Scatter(x=df.index, y=rsi_vals, mode="lines", name=f"RSI {rsi_window}"), row=2, col=1)
-fig.add_hline(y=rsi_overbought, line_dash="dash", line_color="red", row=2, col=1)
-fig.add_hline(y=rsi_oversold, line_dash="dash", line_color="green", row=2, col=1)
-
-fig.update_layout(xaxis_rangeslider_visible=False, hovermode="x unified", height=700)
+fig.update_layout(title=f"{ticker} Candlestick with Indicators", xaxis_rangeslider_visible=False)
 st.plotly_chart(fig, use_container_width=True)
 
-# ------------------------------
-# GitHub helper
-# ------------------------------
+# --------------------------
+# RSI
+# --------------------------
+st.subheader("Relative Strength Index (RSI)")
+fig_rsi = go.Figure()
+fig_rsi.add_trace(go.Scatter(x=df.index, y=df["RSI"], mode="lines", name="RSI"))
+fig_rsi.add_hline(y=70, line=dict(color="red", dash="dash"))
+fig_rsi.add_hline(y=30, line=dict(color="green", dash="dash"))
+fig_rsi.update_layout(title="RSI Indicator")
+st.plotly_chart(fig_rsi, use_container_width=True)
 
-with st.expander("🐙 Push to GitHub"):
-    st.markdown("""
-    ```bash
-    git init
-    git add app_minimal.py
-    git commit -m "Add minimal Stock Market Visualizer"
-    git branch -M main
-    git remote add origin https://github.com/<user>/<repo>.git
-    git push -u origin main
-    ```
-    """)
+# --------------------------
+# Extra visualizations
+# --------------------------
+st.header("📊 Additional Visualizations")
 
-st.caption("Built with Streamlit, Plotly, and yfinance. For informational purposes only.")
+# Daily Returns Histogram
+df["Daily Return"] = df["Close"].pct_change()
+fig_ret = go.Figure()
+fig_ret.add_trace(go.Histogram(x=df["Daily Return"].dropna(), nbinsx=50))
+fig_ret.update_layout(title="Daily Returns Distribution")
+st.plotly_chart(fig_ret, use_container_width=True)
+
+# Cumulative Returns
+cum_returns = (1 + df["Daily Return"].fillna(0)).cumprod() - 1
+fig_cum = go.Figure()
+fig_cum.add_trace(go.Scatter(x=df.index, y=cum_returns, mode="lines", name="Cumulative Return"))
+fig_cum.update_layout(title="Cumulative Return Over Time")
+st.plotly_chart(fig_cum, use_container_width=True)
+
+# Volume Analysis
+fig_vol = go.Figure()
+fig_vol.add_trace(go.Bar(x=df.index, y=df["Volume"], name="Volume"))
+fig_vol.update_layout(title="Trading Volume")
+st.plotly_chart(fig_vol, use_container_width=True)
+
+# MACD
+st.subheader("MACD (Moving Average Convergence Divergence)")
+exp1 = df["Close"].ewm(span=12, adjust=False).mean()
+exp2 = df["Close"].ewm(span=26, adjust=False).mean()
+macd = exp1 - exp2
+signal = macd.ewm(span=9, adjust=False).mean()
+
+fig_macd = go.Figure()
+fig_macd.add_trace(go.Scatter(x=df.index, y=macd, mode="lines", name="MACD"))
+fig_macd.add_trace(go.Scatter(x=df.index, y=signal, mode="lines", name="Signal Line"))
+fig_macd.update_layout(title="MACD Indicator")
+st.plotly_chart(fig_macd, use_container_width=True)
+
+# Correlation Heatmap
+st.subheader("Correlation Heatmap (Multiple Tickers)")
+tickers = st.text_input("Enter tickers (comma-separated)", "AAPL,MSFT,GOOG,AMZN")
+tickers_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+if tickers_list:
+    df_corr = yf.download(tickers_list, period="1y")["Close"].pct_change().dropna()
+    corr_matrix = df_corr.corr()
+    fig_corr = px.imshow(corr_matrix, text_auto=True, aspect="auto", title="Stock Correlation Heatmap")
+    st.plotly_chart(fig_corr, use_container_width=True)
+
+# --------------------------
+# GitHub Instructions
+# --------------------------
+st.sidebar.markdown("### 🚀 Push to GitHub")
+st.sidebar.code("""
+git init
+git add .
+git commit -m "Initial commit - Stock Market Visualizer"
+git branch -M main
+git remote add origin <YOUR_GITHUB_REPO_URL>
+git push -u origin main
+""")
